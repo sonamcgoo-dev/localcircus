@@ -1,0 +1,380 @@
+# RITUAL Marketplace - Kubernetes Deployment Manifests
+# Deploy a production-ready, scalable AI model marketplace
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ritual
+  labels:
+    name: ritual
+    environment: production
+
+---
+# ConfigMap - Application Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ritual-config
+  namespace: ritual
+data:
+  REDIS_URL: "redis://redis-master.default.svc.cluster.local:6379"
+  POSTGRES_URL: "postgresql+asyncpg://postgres:changeme@postgres.default.svc.cluster.local:5432/ritual"
+  LOG_LEVEL: "info"
+  CACHE_TTL_SECONDS: "3600"
+  MAX_CONCURRENT_EXECUTIONS: "10"
+
+---
+# Secret - Sensitive Configuration (base64 encoded)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ritual-secrets
+  namespace: ritual
+type: Opaque
+data:
+  # echo -n "your-secret-key" | base64
+  SECRET_KEY: eW91ci1zZWNyZXQta2V5LWJhc2U2NA==
+  # echo -n "changeme" | base64
+  POSTGRES_PASSWORD: Y2hhbmdlbWU=
+
+---
+# ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ritual-api
+  namespace: ritual
+
+---
+# Role - For Pod management
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ritual-api
+  namespace: ritual
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ritual-api
+  namespace: ritual
+subjects:
+- kind: ServiceAccount
+  name: ritual-api
+  namespace: ritual
+roleRef:
+  kind: Role
+  name: ritual-api
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ritual-api
+  namespace: ritual
+  labels:
+    app: ritual-api
+    version: v2.0
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ritual-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ritual-api
+        version: v2.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: ritual-api
+      containers:
+      - name: api
+        image: ritual-marketplace:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        env:
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "8000"
+        - name: REDIS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: ritual-config
+              key: REDIS_URL
+        - name: POSTGRES_URL
+          valueFrom:
+            configMapKeyRef:
+              name: ritual-config
+              key: POSTGRES_URL
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ritual-secrets
+              key: SECRET_KEY
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: ritual-config
+              key: LOG_LEVEL
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 2
+        volumeMounts:
+        - name: cache-volume
+          mountPath: /app/cache
+      volumes:
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 1Gi
+
+---
+# Ollama Sidecar (optional - for local model serving)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ritual-ollama
+  namespace: ritual
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+      - name: ollama
+        image: ollama/ollama:latest
+        ports:
+        - name: ollama
+          containerPort: 11434
+          protocol: TCP
+        resources:
+          requests:
+            memory: "4Gi"
+            gpu: "0"
+          limits:
+            memory: "16Gi"
+            gpu: "1"
+        env:
+        - name: OLLAMA_HOST
+          value: "0.0.0.0"
+        volumeMounts:
+        - name: models
+          mountPath: /root/.ollama
+      volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: ollama-models
+
+---
+# Ollama PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: ritual
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+# Ollama Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: ritual
+spec:
+  selector:
+    app: ollama
+  ports:
+  - name: ollama
+    port: 11434
+    targetPort: 11434
+  type: ClusterIP
+
+---
+# API Service (LoadBalancer)
+apiVersion: v1
+kind: Service
+metadata:
+  name: ritual-api
+  namespace: ritual
+  labels:
+    app: ritual-api
+spec:
+  type: LoadBalancer
+  selector:
+    app: ritual-api
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ritual-api-hpa
+  namespace: ritual
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ritual-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+
+---
+# PodDisruptionBudget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ritual-api-pdb
+  namespace: ritual
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: ritual-api
+
+---
+# ServiceMonitor (for Prometheus Operator)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ritual-api
+  namespace: ritual
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: ritual-api
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 15s
+  namespaceSelector:
+    matchNames:
+    - ritual
+
+---
+# PrometheusRule (alerting)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ritual-alerts
+  namespace: ritual
+spec:
+  groups:
+  - name: ritual.rules
+    rules:
+    - alert: RitualAPIHighErrorRate
+      expr: rate(zoo_api_requests_total{status="500"}[5m]) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High error rate on Ritual API"
+        description: "Error rate is {{ $value | humanizePercentage }}"
+    - alert: RitualAPIHighLatency
+      expr: histogram_quantile(0.95, rate(zoo_execution_latency_seconds_bucket[5m])) > 10
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High latency on Ritual API"
+        description: "P95 latency is {{ $value | humanizeDuration }}"
+    - alert: RitualCacheMissRate
+      expr: rate(zoo_cache_misses_total[5m]) / rate(zoo_cache_hits_total[5m]) > 0.5
+      for: 10m
+      labels:
+        severity: info
+      annotations:
+        summary: "High cache miss rate"
+        description: "Cache miss rate is {{ $value | humanizePercentage }}"

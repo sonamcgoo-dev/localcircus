@@ -1,0 +1,243 @@
+# RITUAL Marketplace - Full Stack Docker Compose
+# Spin up the entire system: API, Redis, PostgreSQL, Prometheus, Grafana
+
+version: '3.8'
+
+services:
+  # ==================== Core Services ====================
+  
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ritual-api
+    ports:
+      - "8000:8000"  # API
+      - "9090:9090"  # Metrics
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379
+      - POSTGRES_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ritual
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - LOG_LEVEL=info
+      - CACHE_TTL_SECONDS=3600
+      - MAX_CONCURRENT_EXECUTIONS=10
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - ritual-network
+    volumes:
+      - api-cache:/app/cache
+
+  # ==================== Data Services ====================
+  
+  redis:
+    image: redis:7-alpine
+    container_name: ritual-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ritual-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: ritual-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=ritual
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ritual-network
+
+  # ==================== Observability ====================
+  
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ritual-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - ritual-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ritual-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - ritual-network
+
+  # ==================== Optional: Ollama (Local Models) ====================
+  
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ritual-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    # GPU support (uncomment if using NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - ritual-network
+    profiles:
+      - with-ollama
+
+  # ==================== Optional: Celery Worker ====================
+  
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ritual-celery
+    command: celery -A src.backend.services.celery_tasks worker --loglevel=info --concurrency=4
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - POSTGRES_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ritual
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ritual-network
+    profiles:
+      - with-celery
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ritual-celery-beat
+    command: celery -A src.backend.services.celery_tasks beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery-worker:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - ritual-network
+    profiles:
+      - with-celery
+
+  # ==================== Optional: Flower (Celery Monitoring) ====================
+  
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ritual-flower
+    ports:
+      - "5555:5555"
+    command: celery -A src.backend.services.celery_tasks flower --port=5555
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379
+      - CELERY_RESULT_BACKEND=redis://redis:6379
+    depends_on:
+      - redis
+      - celery-worker
+    restart: unless-stopped
+    networks:
+      - ritual-network
+    profiles:
+      - with-celery
+
+# ==================== Networks & Volumes ====================
+
+networks:
+  ritual-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:
+  grafana-data:
+  prometheus-data:
+  api-cache:
+  ollama-models:
+
+# ==================== Quick Commands ====================
+# 
+# Basic (API + Redis + Postgres):
+#   docker-compose up -d
+#
+# With local models:
+#   docker-compose --profile with-ollama up -d
+#
+# Full stack with Celery:
+#   docker-compose --profile with-celery up -d
+#
+# Full everything:
+#   docker-compose --profile with-ollama --profile with-celery up -d
+#
+# Scale API:
+#   docker-compose up -d --scale api=3
+#
+# View logs:
+#   docker-compose logs -f api
+#
+# Stop:
+#   docker-compose down
+#
+# Stop and remove volumes:
+#   docker-compose down -v

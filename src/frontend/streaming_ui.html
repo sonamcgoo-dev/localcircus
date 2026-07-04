@@ -1,0 +1,942 @@
+"""
+Enhanced Streaming UI - Full production frontend with:
+- Markdown rendering
+- Syntax highlighting  
+- Token speed indicator
+- Real-time metrics
+- Conversation history
+- Model comparison
+"""
+import asyncio
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import HTMLResponse
+
+app = FastAPI(title="RITUAL Marketplace - Production UI")
+
+
+# Full Production Frontend with all UI improvements
+PRODUCTION_FRONTEND = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RITUAL Marketplace - Production</title>
+    
+    <!-- External Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/typescript.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+    
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a25;
+            --bg-hover: #22222f;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --text-muted: #606070;
+            --accent: #667eea;
+            --accent-hover: #7b8ff0;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --border: rgba(102, 126, 234, 0.2);
+            --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        
+        /* Layout */
+        .app-container {
+            display: grid;
+            grid-template-columns: 280px 1fr 320px;
+            min-height: 100vh;
+            gap: 1px;
+            background: var(--border);
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            background: var(--bg-secondary);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .logo {
+            font-size: 24px;
+        }
+        
+        .brand-name {
+            font-size: 18px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .new-chat-btn {
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .new-chat-btn:hover {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+        }
+        
+        .conversations-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .conversation-item {
+            padding: 10px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 14px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .conversation-item:hover {
+            background: var(--bg-hover);
+        }
+        
+        .conversation-item.active {
+            background: var(--accent);
+            color: white;
+        }
+        
+        /* Main Chat Area */
+        .main-area {
+            background: var(--bg-primary);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        
+        .chat-header {
+            padding: 16px 24px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .model-selector {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .model-badge {
+            padding: 6px 12px;
+            background: var(--accent);
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        
+        .message {
+            max-width: 80%;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.user {
+            margin-left: auto;
+        }
+        
+        .message.assistant {
+            margin-right: auto;
+        }
+        
+        .message-content {
+            padding: 16px 20px;
+            border-radius: 16px;
+            font-size: 15px;
+            line-height: 1.7;
+        }
+        
+        .message.user .message-content {
+            background: var(--accent);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .message.assistant .message-content {
+            background: var(--bg-tertiary);
+            border-bottom-left-radius: 4px;
+        }
+        
+        /* Markdown Styles */
+        .message-content h1, .message-content h2, .message-content h3 {
+            margin: 16px 0 8px 0;
+            font-weight: 600;
+        }
+        
+        .message-content h1 { font-size: 1.5em; }
+        .message-content h2 { font-size: 1.3em; }
+        .message-content h3 { font-size: 1.1em; }
+        
+        .message-content p {
+            margin: 8px 0;
+        }
+        
+        .message-content code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9em;
+        }
+        
+        .message-content pre {
+            background: #0d0d12;
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+            margin: 12px 0;
+        }
+        
+        .message-content pre code {
+            background: none;
+            padding: 0;
+            font-size: 13px;
+        }
+        
+        .message-content ul, .message-content ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+        
+        .message-content li {
+            margin: 4px 0;
+        }
+        
+        .message-content blockquote {
+            border-left: 3px solid var(--accent);
+            padding-left: 16px;
+            margin: 12px 0;
+            color: var(--text-secondary);
+        }
+        
+        /* Typing indicator */
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            padding: 16px 20px;
+            background: var(--bg-tertiary);
+            border-radius: 16px;
+            width: fit-content;
+        }
+        
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--text-muted);
+            border-radius: 50%;
+            animation: typing 1.4s infinite;
+        }
+        
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+            30% { transform: translateY(-4px); opacity: 1; }
+        }
+        
+        /* Input Area */
+        .input-area {
+            padding: 20px 24px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+        }
+        
+        .input-container {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        
+        .chat-input {
+            flex: 1;
+            padding: 14px 18px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-size: 15px;
+            resize: none;
+            max-height: 200px;
+            min-height: 52px;
+            font-family: inherit;
+        }
+        
+        .chat-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        
+        .send-btn {
+            padding: 14px 24px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .send-btn:hover {
+            background: var(--accent-hover);
+        }
+        
+        .send-btn:disabled {
+            background: var(--bg-tertiary);
+            cursor: not-allowed;
+        }
+        
+        /* Right Panel - Models & Metrics */
+        .right-panel {
+            background: var(--bg-secondary);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: auto;
+        }
+        
+        .panel-section {
+            background: var(--bg-tertiary);
+            border-radius: 12px;
+            padding: 16px;
+        }
+        
+        .panel-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+        
+        /* Metrics Dashboard */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        
+        .metric-card {
+            background: var(--bg-secondary);
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        
+        .metric-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        
+        /* Token Speed */
+        .token-speed {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+        }
+        
+        .speed-bar {
+            width: 100px;
+            height: 6px;
+            background: var(--bg-primary);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        .speed-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--success), var(--accent));
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+        
+        /* Model List */
+        .model-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .model-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        
+        .model-item:hover {
+            border-color: var(--accent);
+        }
+        
+        .model-item.selected {
+            border-color: var(--accent);
+            background: rgba(102, 126, 234, 0.1);
+        }
+        
+        .model-name {
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .model-status {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        
+        .model-status.cached {
+            color: var(--success);
+        }
+        
+        /* Comparison Mode */
+        .compare-btn {
+            width: 100%;
+            padding: 10px;
+            background: var(--bg-secondary);
+            border: 1px dashed var(--border);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 13px;
+        }
+        
+        .compare-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        
+        /* Status Bar */
+        .status-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 8px 20px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-muted);
+            z-index: 100;
+        }
+        
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+        
+        .status-dot.disconnected { background: var(--error); }
+        .status-dot.connecting { background: var(--warning); animation: pulse 1s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .app-container {
+                grid-template-columns: 1fr;
+            }
+            .sidebar, .right-panel {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <span class="logo">🤖</span>
+                <span class="brand-name">RITUAL</span>
+            </div>
+            
+            <button class="new-chat-btn" onclick="newConversation()">
+                <span>+</span> New Chat
+            </button>
+            
+            <div class="conversations-list" id="conversationsList">
+                <!-- Conversations will be populated here -->
+            </div>
+        </aside>
+        
+        <!-- Main Chat -->
+        <main class="main-area">
+            <header class="chat-header">
+                <div class="model-selector">
+                    <span class="model-badge" id="currentModel">llama-3.1-8b</span>
+                    <span style="color: var(--text-muted); font-size: 14px;">→ Streaming</span>
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <button class="compare-btn" onclick="toggleCompare()" style="width: auto; padding: 8px 16px;">
+                        ⚖️ Compare
+                    </button>
+                </div>
+            </header>
+            
+            <div class="chat-messages" id="chatMessages">
+                <div style="text-align: center; padding: 60px; color: var(--text-muted);">
+                    <div style="font-size: 48px; margin-bottom: 16px;">💬</div>
+                    <div style="font-size: 18px; margin-bottom: 8px;">Start a conversation</div>
+                    <div style="font-size: 14px;">Select a model from the right panel and type your message</div>
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <div class="input-container">
+                    <textarea 
+                        class="chat-input" 
+                        id="chatInput" 
+                        placeholder="Type your message... (Shift+Enter for new line)"
+                        rows="1"
+                        onkeydown="handleKeyDown(event)"
+                        oninput="autoResize(this)"
+                    ></textarea>
+                    <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                        Send
+                    </button>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Right Panel -->
+        <aside class="right-panel">
+            <div class="panel-section">
+                <div class="panel-title">📊 Real-Time Metrics</div>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-value" id="tokensGenerated">0</div>
+                        <div class="metric-label">Tokens</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="tokensPerSec">0</div>
+                        <div class="metric-label">Tokens/sec</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="latencyMs">--</div>
+                        <div class="metric-label">Latency</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="cacheHitRate">--</div>
+                        <div class="metric-label">Cache Hit</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <div class="panel-title">⚡ Streaming Speed</div>
+                <div class="token-speed">
+                    <span id="speedLabel">Ready</span>
+                    <div class="speed-bar">
+                        <div class="speed-fill" id="speedFill" style="width: 0%"></div>
+                    </div>
+                    <span id="speedValue">0 t/s</span>
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <div class="panel-title">🤖 Available Models</div>
+                <div class="model-list" id="modelList">
+                    <!-- Models will be populated here -->
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <div class="panel-title">💾 Cached Models</div>
+                <div id="cachedModels" style="color: var(--text-muted); font-size: 13px;">
+                    Loading...
+                </div>
+            </div>
+        </aside>
+    </div>
+    
+    <div class="status-bar">
+        <div class="status-item">
+            <span class="status-dot" id="connectionDot"></span>
+            <span id="connectionStatus">Connecting...</span>
+        </div>
+        <div class="status-item">
+            <span>RITUAL v2.0</span>
+        </div>
+    </div>
+    
+    <script>
+        // ==================== State ====================
+        let ws = null;
+        let sessionId = null;
+        let currentModel = 'llama-3.1-8b-instruct';
+        let conversations = [];
+        let currentConversation = null;
+        let isStreaming = false;
+        let messages = [];
+        let tokenTimes = []; // For calculating tokens/sec
+        
+        // ==================== Initialize ====================
+        async function init() {
+            await loadConversations();
+            await loadModels();
+            await connectWebSocket();
+            updateStatus();
+        }
+        
+        // ==================== WebSocket ====================
+        async function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                document.getElementById('connectionDot').className = 'status-dot';
+                document.getElementById('connectionStatus').textContent = 'Connected';
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('connectionDot').className = 'status-dot disconnected';
+                document.getElementById('connectionStatus').textContent = 'Disconnected';
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            ws.onerror = () => {
+                document.getElementById('connectionDot').className = 'status-dot connecting';
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } catch (e) {}
+            };
+        }
+        
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'connected':
+                    sessionId = msg.session_id;
+                    break;
+                    
+                case 'execution.started':
+                    isStreaming = true;
+                    addTypingIndicator();
+                    break;
+                    
+                case 'execution.token':
+                    updateTokens(msg.tokens_generated);
+                    if (msg.token) {
+                        updateStreamingSpeed();
+                    }
+                    break;
+                    
+                case 'execution.completed':
+                    isStreaming = false;
+                    removeTypingIndicator();
+                    updateFinalStats(msg.latency_ms);
+                    break;
+            }
+        }
+        
+        // ==================== Chat ====================
+        function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            if (!text || isStreaming) return;
+            
+            // Add user message
+            addMessage('user', text);
+            input.value = '';
+            input.style.height = 'auto';
+            
+            // Send to backend
+            ws.send(JSON.stringify({
+                type: 'execute',
+                model_id: currentModel,
+                prompt: text
+            }));
+        }
+        
+        function addMessage(role, content) {
+            const messagesDiv = document.getElementById('chatMessages');
+            
+            // Remove welcome message if present
+            const welcome = messagesDiv.querySelector('.welcome');
+            if (welcome) welcome.remove();
+            
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${role}`;
+            
+            // Parse markdown for assistant messages
+            const renderedContent = role === 'assistant' 
+                ? marked.parse(content)
+                : content;
+            
+            msgDiv.innerHTML = `
+                <div class="message-content">${renderedContent}</div>
+            `;
+            
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            // Highlight code blocks
+            msgDiv.querySelectorAll('pre code').forEach(block => {
+                hljs.highlightElement(block);
+            });
+            
+            messages.push({ role, content });
+        }
+        
+        function addTypingIndicator() {
+            const messagesDiv = document.getElementById('chatMessages');
+            const indicator = document.createElement('div');
+            indicator.id = 'typingIndicator';
+            indicator.className = 'message assistant';
+            indicator.innerHTML = `
+                <div class="typing-indicator">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                </div>
+            `;
+            messagesDiv.appendChild(indicator);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function removeTypingIndicator() {
+            const indicator = document.getElementById('typingIndicator');
+            if (indicator) indicator.remove();
+        }
+        
+        // ==================== Metrics ====================
+        function updateTokens(count) {
+            document.getElementById('tokensGenerated').textContent = count;
+        }
+        
+        function updateStreamingSpeed() {
+            const now = Date.now();
+            tokenTimes.push(now);
+            
+            // Keep only last 10 seconds
+            tokenTimes = tokenTimes.filter(t => now - t < 10000);
+            
+            const tokensPerSec = tokenTimes.length;
+            document.getElementById('tokensPerSec').textContent = tokensPerSec;
+            document.getElementById('speedValue').textContent = `${tokensPerSec} t/s`;
+            document.getElementById('speedFill').style.width = `${Math.min(tokensPerSec * 5, 100)}%`;
+            document.getElementById('speedLabel').textContent = tokensPerSec > 0 ? 'Streaming' : 'Ready';
+        }
+        
+        function updateFinalStats(latencyMs) {
+            document.getElementById('latencyMs').textContent = `${latencyMs.toFixed(0)}ms`;
+        }
+        
+        // ==================== Models ====================
+        async function loadModels() {
+            try {
+                const response = await fetch('/api/registry/search?limit=10');
+                const data = await response.json();
+                
+                const modelList = document.getElementById('modelList');
+                modelList.innerHTML = data.models.map(m => `
+                    <div class="model-item ${m.id === currentModel ? 'selected' : ''}" 
+                         onclick="selectModel('${m.id}', '${m.name}')">
+                        <span class="model-name">${m.name}</span>
+                        <span class="model-status">${m.runtime_metrics?.total_runs || 0} runs</span>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load models:', e);
+            }
+        }
+        
+        function selectModel(modelId, modelName) {
+            currentModel = modelId;
+            document.getElementById('currentModel').textContent = modelName.split(' ')[0];
+            
+            // Update selection UI
+            document.querySelectorAll('.model-item').forEach(item => {
+                item.classList.remove('selected');
+                if (item.querySelector('.model-name').textContent === modelName) {
+                    item.classList.add('selected');
+                }
+            });
+            
+            // Send model switch
+            ws.send(JSON.stringify({
+                type: 'switch_model',
+                model_id: modelId
+            }));
+        }
+        
+        // ==================== Conversations ====================
+        async function loadConversations() {
+            // Load from localStorage for now
+            conversations = JSON.parse(localStorage.getItem('ritual_conversations') || '[]');
+            renderConversations();
+        }
+        
+        function newConversation() {
+            currentConversation = null;
+            messages = [];
+            document.getElementById('chatMessages').innerHTML = `
+                <div class="welcome" style="text-align: center; padding: 60px; color: var(--text-muted);">
+                    <div style="font-size: 48px; margin-bottom: 16px;">💬</div>
+                    <div style="font-size: 18px;">Start a conversation</div>
+                </div>
+            `;
+        }
+        
+        function renderConversations() {
+            const list = document.getElementById('conversationsList');
+            list.innerHTML = conversations.map((conv, i) => `
+                <div class="conversation-item ${conv.id === currentConversation ? 'active' : ''}" 
+                     onclick="loadConversation(${i})">
+                    ${conv.title || 'New Chat'}
+                </div>
+            `).join('');
+        }
+        
+        // ==================== Utilities ====================
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+        
+        function autoResize(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+        }
+        
+        function toggleCompare() {
+            alert('Model comparison mode coming soon!');
+        }
+        
+        function updateStatus() {
+            setInterval(async () => {
+                try {
+                    const response = await fetch('/api/health');
+                    const data = await response.json();
+                    
+                    document.getElementById('cacheHitRate').textContent = 
+                        data.pool?.cache_hit_rate 
+                            ? `${(data.pool.cache_hit_rate * 100).toFixed(0)}%` 
+                            : '--';
+                    
+                    document.getElementById('cachedModels').textContent = 
+                        data.pool?.models_loaded 
+                            ? `${data.pool.models_loaded} models loaded` 
+                            : 'No models cached';
+                } catch (e) {}
+            }, 5000);
+        }
+        
+        // Initialize
+        init();
+    </script>
+</body>
+</html>
+"""
+
+
+@app.get("/")
+async def root():
+    """Serve the production frontend."""
+    return HTMLResponse(PRODUCTION_FRONTEND)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
